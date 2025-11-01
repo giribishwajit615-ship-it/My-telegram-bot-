@@ -1,7 +1,7 @@
 """
-Telegram Universal Storage & Share Bot (Admin Only)
-Supports video, photo, document, audio, and text.
-Only ADMIN_ID can use the bot.
+Telegram Universal Storage & Share Bot
+Public users can view shared files.
+Only ADMIN_ID can upload new media.
 """
 
 import os
@@ -81,22 +81,6 @@ def increment_views(media_id: int):
     DB_CONN.commit()
 
 
-def get_stats():
-    cur = DB_CONN.cursor()
-    cur.execute("SELECT COUNT(*), SUM(views) FROM media")
-    total, views = cur.fetchone()
-    # Top 5 most viewed
-    cur.execute("SELECT id, type, views FROM media ORDER BY views DESC LIMIT 5")
-    top = cur.fetchall()
-    return total or 0, views or 0, top
-
-
-def get_allstats():
-    cur = DB_CONN.cursor()
-    cur.execute("SELECT type, COUNT(*) FROM media GROUP BY type")
-    rows = cur.fetchall()
-    return rows
-
 # ------------- Access Control -------------
 def is_admin(user_id: int) -> bool:
     return user_id == ADMIN_ID
@@ -105,180 +89,89 @@ def is_admin(user_id: int) -> bool:
 # ------------- Handlers ----------------
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+    args = context.args
 
-    # Restrict access
-    if not is_admin(user.id):
-        await update.message.reply_text("🚫 You are not authorized to use this bot.")
-        return
-
-    username = user.username or user.first_name or "User"
-    args = context.args if context.args else []
-
-    # If share link
-    if args and len(args) >= 1 and args[0].startswith("share_"):
+    # Agar start ke sath argument hai -> jaise ?start=share_5
+    if args and args[0].startswith("share_"):
         try:
-            mid = int(args[0].split("share_")[-1])
-        except Exception:
-            await update.message.reply_text("Invalid share link.")
-            return
-
-        record = get_media_by_id(mid)
-        if not record:
-            await update.message.reply_text("File not found or removed.")
-            return
-
-        _, mtype, file_id, text_content, uploader_id, caption, title, views, created_at = record
-
-        try:
-            if mtype == "video":
-                await context.bot.send_video(update.effective_chat.id, file_id, caption=caption or title or "")
-            elif mtype == "photo":
-                await context.bot.send_photo(update.effective_chat.id, file_id, caption=caption or title or "")
-            elif mtype == "document":
-                await context.bot.send_document(update.effective_chat.id, file_id, caption=caption or title or "")
-            elif mtype == "audio":
-                await context.bot.send_audio(update.effective_chat.id, file_id, caption=caption or title or "")
-            elif mtype == "text":
-                await update.message.reply_text(text_content)
-            else:
-                await update.message.reply_text("Unknown media type.")
+            media_id = int(args[0].split("_")[1])
+            record = get_media_by_id(media_id)
+            if not record:
+                await update.message.reply_text("❌ File not found.")
                 return
 
-            increment_views(mid)
+            increment_views(media_id)
+
+            media_type, file_id, text_content, _, caption, title, *_ = record[1:]
+            if media_type == "text":
+                await update.message.reply_text(text_content or "📄 Empty text.")
+            elif media_type == "photo":
+                await update.message.reply_photo(file_id, caption=caption or "")
+            elif media_type == "video":
+                await update.message.reply_video(file_id, caption=caption or "")
+            elif media_type == "document":
+                await update.message.reply_document(file_id, caption=caption or "")
+            elif media_type == "audio":
+                await update.message.reply_audio(file_id, caption=caption or "")
+            else:
+                await update.message.reply_text("❌ Unsupported media type.")
         except Exception as e:
-            logger.exception("Error sending media: %s", e)
-            await update.message.reply_text("Failed to send media.")
-            return
-
-        await update.message.reply_text(f"✅ Sent the content for you, {username}")
+            await update.message.reply_text(f"⚠️ Error loading file: {e}")
         return
 
-    await update.message.reply_text(f"Hello 👋, {username}\nSend me any photo, video, file, or text to get a share link.")
+    # Normal start message (for all users)
+    await update.message.reply_text(
+        f"👋 Hello {user.first_name or 'User'}!\n"
+        "Send me a valid share link to access a file.\n\n"
+        "If you're the admin, you can send media to store it."
+    )
 
 
-async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ---------- Upload Handler (Admin Only) ----------
+async def handle_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-
-    # Restrict access
     if not is_admin(user.id):
-        await update.message.reply_text("🚫 You are not authorized to use this bot.")
+        await update.message.reply_text("🚫 Only admin can upload files.")
         return
 
-    caption = update.message.caption or ""
-    media_type = None
+    message = update.message
     file_id = None
-    text_content = None
+    media_type = None
+
+    if message.video:
+        file_id = message.video.file_id
+        media_type = "video"
+    elif message.photo:
+        file_id = message.photo[-1].file_id
+        media_type = "photo"
+    elif message.document:
+        file_id = message.document.file_id
+        media_type = "document"
+    elif message.audio:
+        file_id = message.audio.file_id
+        media_type = "audio"
+    elif message.text:
+        file_id = None
+        media_type = "text"
+    else:
+        await update.message.reply_text("⚠️ Unsupported media type.")
+        return
+
+    caption = message.caption or ""
     title = None
 
-    if update.message.video:
-        media_type = "video"
-        file_id = update.message.video.file_id
-        title = getattr(update.message.video, "file_name", None)
-    elif update.message.photo:
-        media_type = "photo"
-        file_id = update.message.photo[-1].file_id
-    elif update.message.document:
-        media_type = "document"
-        file_id = update.message.document.file_id
-        title = update.message.document.file_name
-    elif update.message.audio:
-        media_type = "audio"
-        file_id = update.message.audio.file_id
-        title = update.message.audio.file_name
-    elif update.message.text:
-        media_type = "text"
-        text_content = update.message.text
-    else:
-        await update.message.reply_text("Unsupported message type.")
-        return
+    media_id = save_media(media_type, file_id, message.text if media_type == "text" else None, user.id, caption, title)
 
-    mid = save_media(media_type, file_id, text_content, user.id, caption, title)
-
-    # Send to channel
-    try:
-        if media_type == "text":
-            await context.bot.send_message(CHANNEL_ID, f"Stored text (id={mid}):\n{text_content}")
-        elif media_type == "photo":
-            await context.bot.send_photo(CHANNEL_ID, file_id, caption=f"Stored photo id={mid}")
-        elif media_type == "video":
-            await context.bot.send_video(CHANNEL_ID, file_id, caption=f"Stored video id={mid}")
-        elif media_type == "document":
-            await context.bot.send_document(CHANNEL_ID, file_id, caption=f"Stored doc id={mid}")
-        elif media_type == "audio":
-            await context.bot.send_audio(CHANNEL_ID, file_id, caption=f"Stored audio id={mid}")
-    except Exception as e:
-        logger.warning("Channel upload failed: %s", e)
-
-    bot_username = BOT_USERNAME
-    share_link = f"https://t.me/{bot_username}?start=share_{mid}"
-
-    keyboard = InlineKeyboardMarkup(
-        [[InlineKeyboardButton("🔗 Open Share Link", url=share_link)]]
-    )
-
-    await update.message.reply_text(
-        f"✅ Saved ({media_type}) successfully.\nShare link:\n{share_link}",
-        reply_markup=keyboard,
-    )
+    share_link = f"https://t.me/{BOT_USERNAME}?start=share_{media_id}"
+    await update.message.reply_text(f"✅ Saved!\n🔗 Share link:\n{share_link}")
 
 
-async def stats_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    if not is_admin(user.id):
-        await update.message.reply_text("🚫 You are not authorized to use this bot.")
-        return
-
-    total, views, top = get_stats()
-    msg = f"📊 *Bot Stats*\n\n📦 Total Files: {total}\n👁️ Total Views: {views}\n\n🔥 *Top 5 Most Viewed:*\n"
-    if not top:
-        msg += "No media yet."
-    else:
-        for r in top:
-            msg += f"• ID {r[0]} | {r[1].capitalize()} | {r[2]} views\n"
-    await update.message.reply_text(msg, parse_mode="Markdown")
-
-
-async def allstats_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    if not is_admin(user.id):
-        await update.message.reply_text("🚫 You are not authorized to use this bot.")
-        return
-
-    rows = get_allstats()
-    msg = "📂 *Detailed Upload Stats:*\n\n"
-    total = 0
-    for t, count in rows:
-        msg += f"• {t.capitalize()}: {count}\n"
-        total += count
-    msg += f"\n📦 Total Files: {total}"
-    await update.message.reply_text(msg, parse_mode="Markdown")
-
-
-async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    if not is_admin(user.id):
-        await update.message.reply_text("🚫 You are not authorized to use this bot.")
-        return
-
-    await update.message.reply_text(
-        "📦 Send any photo, video, file, or text — I’ll store it privately and give you a share link!\n\n"
-        "Commands:\n"
-        "/stats - Show total uploads and most viewed media\n"
-        "/allstats - Show detailed upload breakdown\n"
-        "/help - Show this message"
-    )
-
-
-# -------------- Main ----------------
+# ---------- MAIN ----------
 def main():
-    application = ApplicationBuilder().token(TOKEN).build()
-    application.add_handler(CommandHandler("start", start_handler))
-    application.add_handler(CommandHandler("help", help_handler))
-    application.add_handler(CommandHandler("stats", stats_handler))
-    application.add_handler(CommandHandler("allstats", allstats_handler))
-    application.add_handler(MessageHandler(filters.ALL, media_handler))
-    print("🚀 Bot running...")
-    application.run_polling()
+    app = ApplicationBuilder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start_handler))
+    app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_upload))
+    app.run_polling()
 
 
 if __name__ == "__main__":
