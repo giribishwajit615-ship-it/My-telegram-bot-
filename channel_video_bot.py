@@ -33,10 +33,9 @@ def init_db():
     """)
     c.execute("""
         CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER,
+            user_id INTEGER PRIMARY KEY,
             token TEXT,
-            first_used TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (user_id)
+            first_used TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
     c.execute("""
@@ -73,8 +72,6 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     token = args[0]
-
-    # check if user already has active token within 24 hours
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("SELECT first_used FROM users WHERE user_id = ?", (user_id,))
@@ -84,24 +81,21 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if row:
         first_used = datetime.datetime.fromisoformat(row[0])
         if now - first_used > datetime.timedelta(hours=24):
-            # reset access
             c.execute("UPDATE users SET token=?, first_used=? WHERE user_id=?", (token, now.isoformat(), user_id))
         else:
-            # within 24hr, allow direct access
             c.execute("SELECT file_id, caption FROM videos WHERE token = ?", (token,))
             v = c.fetchone()
             conn.close()
             if v:
                 await context.bot.send_video(chat_id=user_id, video=v[0], caption=v[1] or "")
-                c = sqlite3.connect(DB_PATH)
-                c.execute("INSERT INTO views (user_id, token) VALUES (?, ?)", (user_id, token))
-                c.commit()
-                c.close()
+                conn2 = sqlite3.connect(DB_PATH)
+                conn2.execute("INSERT INTO views (user_id, token) VALUES (?, ?)", (user_id, token))
+                conn2.commit()
+                conn2.close()
             return
     else:
         c.execute("INSERT INTO users (user_id, token, first_used) VALUES (?, ?, ?)", (user_id, token, now.isoformat()))
 
-    # send requested video
     c.execute("SELECT file_id, caption FROM videos WHERE token = ?", (token,))
     v = c.fetchone()
     conn.commit()
@@ -113,10 +107,8 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await context.bot.send_video(chat_id=user_id, video=v[0], caption=v[1] or "")
 
-    # save view
     conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("INSERT INTO views (user_id, token) VALUES (?, ?)", (user_id, token))
+    conn.execute("INSERT INTO views (user_id, token) VALUES (?, ?)", (user_id, token))
     conn.commit()
     conn.close()
 
@@ -135,23 +127,23 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     token = uuid.uuid4().hex
 
     conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("INSERT INTO videos (token, file_id, filename, caption) VALUES (?, ?, ?, ?)",
-              (token, file_id, getattr(video, 'file_name', None), caption))
+    conn.execute("INSERT INTO videos (token, file_id, filename, caption) VALUES (?, ?, ?, ?)",
+                 (token, file_id, getattr(video, 'file_name', None), caption))
     conn.commit()
     conn.close()
 
     long_link = f"https://t.me/{BASE_BOT_USERNAME}?start={token}"
     short_link = shorten_url(long_link)
 
-    # send short link only
+    # send short link only to admin
     try:
         await context.bot.send_message(
             chat_id=OWNER_CHAT_ID,
-            text=f"🎬 New video saved!\n🔗 Short link: {short_link}"
+            text=f"🎬 New video saved!\n\n🔗 Short link: {short_link}\n\nOriginal: {long_link}\n\nToken: {token}"
         )
-    except Exception as e:
+    except Exception:
         logging.exception("Failed to send link to admin")
+
 
 async def user_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_CHAT_ID:
@@ -188,35 +180,6 @@ def main():
     app.add_handler(CommandHandler("start", start_handler))
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.ALL, channel_post_handler))
     app.add_handler(CommandHandler("user", user_stats))
-
-    print("✅ Bot started...")
-    app.run_polling()
-
-if __name__ == "__main__":
-    main()
-    long_link = f"https://t.me/{BASE_BOT_USERNAME}?start={token}"
-    short_link = shorten_url(long_link)
-
-    # send the short link privately to admin (OWNER_CHAT_ID)
-    # === FIXED ===
-try:
-    await context.bot.send_message(
-        chat_id=OWNER_CHAT_ID,
-        text=f"🎬 New video saved!\n🔗 Short link: {short_link}"
-    )
-except Exception as e:
-    logging.exception("Failed to send short link to admin")
-    except Exception as e:
-        logging.exception("Failed to send short link to admin")
-
-# === MAIN ===
-def main():
-    logging.basicConfig(level=logging.INFO)
-    init_db()
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start_handler))
-    app.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.ALL, channel_post_handler))
 
     print("✅ Bot started... Waiting for videos in channel.")
     app.run_polling()
