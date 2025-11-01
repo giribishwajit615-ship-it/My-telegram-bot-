@@ -129,7 +129,7 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Normal start message
     await update.message.reply_text(
         f"👋 Hello {user.first_name or 'User'}!\n\n"
-        "📁 Send me a valid share link to access a file.\n\n"
+        "📁 Send me a share link to access a file.\n\n"
         "🧑‍💻 If you're the admin, send any media or text to store it.\n"
         "Use /help to see available commands."
     )
