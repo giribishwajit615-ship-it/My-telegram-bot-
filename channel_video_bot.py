@@ -11,7 +11,7 @@ from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, Messa
 
 # === CONFIG ===
 BOT_TOKEN = "8222645012:AAEQMNK31oa5hDo_9OEStfNL7FMBdZMkUFM"
-ADRINO_SHORTEN_API = ""
+ADRINO_SHORTEN_API = "https://adrinolinks.in/api"
 ADRINO_API_KEY = "5b33540e7eaa148b24b8cca0d9a5e1b9beb3e634"
 BASE_BOT_USERNAME = "Cornsebot"  # without @
 OWNER_CHAT_ID = 7681308594  # 👈 YOUR Telegram ID (admin)
