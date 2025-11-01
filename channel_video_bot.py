@@ -1,12 +1,12 @@
-    # file: channel_video_bot.py
+# file: channel_video_bot.py
 # Requirements: python >= 3.9, python-telegram-bot>=20, requests
+# Install first: pip install python-telegram-bot requests
 
 import uuid
 import sqlite3
 import requests
 import logging
-import datetime
-from telegram import Update
+from telegram import Update, InputFile
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
 
 # === CONFIG ===
@@ -14,11 +14,11 @@ BOT_TOKEN = "8222645012:AAEQMNK31oa5hDo_9OEStfNL7FMBdZMkUFM"
 ADRINO_SHORTEN_API = "https://adrinolinks.in/api"
 ADRINO_API_KEY = "5b33540e7eaa148b24b8cca0d9a5e1b9beb3e634"
 BASE_BOT_USERNAME = "Cornsebot"  # without @
-OWNER_CHAT_ID = 7681308594
+OWNER_CHAT_ID = 7681308594  # 👈 YOUR Telegram ID (admin)
 
+# === DB ===
 DB_PATH = "videos.db"
 
-# === INIT DB ===
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -31,100 +31,104 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            token TEXT,
-            first_used TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS views (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            token TEXT,
-            viewed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
     conn.commit()
     conn.close()
 
 # === SHORTENER ===
 def shorten_url(long_url: str) -> str:
-    payload = {"api_key": ADRINO_API_KEY, "url": long_url}
+    payload = {
+        "api_key": ADRINO_API_KEY,
+        "url": long_url
+    }
     try:
         r = requests.post(ADRINO_SHORTEN_API, json=payload, timeout=8)
         r.raise_for_status()
         data = r.json()
+        # adjust based on response format
         short = data.get("short") or data.get("short_url") or data.get("result")
-        return short or long_url
-    except Exception:
-        logging.exception("Shortener failed")
+        if not short:
+            raise ValueError("Shortener response missing short url, response: " + str(data))
+        return short
+    except Exception as e:
+        logging.exception("Shortener failed, returning long url as fallback")
         return long_url
 
 # === HANDLERS ===
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
-    user_id = update.effective_user.id
-
     if not args:
-        await update.message.reply_text("👋 Hello! Use the special link to get your video.")
+        await update.message.reply_text("Hi 👋 — Agar aapko video chahiye to link se start karein.")
         return
 
     token = args[0]
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT first_used FROM users WHERE user_id = ?", (user_id,))
+    c.execute("SELECT file_id, filename, caption FROM videos WHERE token = ?", (token,))
     row = c.fetchone()
-    now = datetime.datetime.utcnow()
-
-    if row:
-        first_used = datetime.datetime.fromisoformat(row[0])
-        if now - first_used > datetime.timedelta(hours=24):
-            c.execute("UPDATE users SET token=?, first_used=? WHERE user_id=?", (token, now.isoformat(), user_id))
-        else:
-            c.execute("SELECT file_id, caption FROM videos WHERE token = ?", (token,))
-            v = c.fetchone()
-            conn.close()
-            if v:
-                await context.bot.send_video(chat_id=user_id, video=v[0], caption=v[1] or "")
-                conn2 = sqlite3.connect(DB_PATH)
-                conn2.execute("INSERT INTO views (user_id, token) VALUES (?, ?)", (user_id, token))
-                conn2.commit()
-                conn2.close()
-            return
-    else:
-        c.execute("INSERT INTO users (user_id, token, first_used) VALUES (?, ?, ?)", (user_id, token, now.isoformat()))
-
-    c.execute("SELECT file_id, caption FROM videos WHERE token = ?", (token,))
-    v = c.fetchone()
-    conn.commit()
     conn.close()
 
-    if not v:
-        await update.message.reply_text("❌ Invalid or expired video link.")
+    if not row:
+        await update.message.reply_text("Maaf kijiye — yeh link expire ho gaya ya galat hai.")
         return
 
-    await context.bot.send_video(chat_id=user_id, video=v[0], caption=v[1] or "")
-
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("INSERT INTO views (user_id, token) VALUES (?, ?)", (user_id, token))
-    conn.commit()
-    conn.close()
-
+    file_id, filename, caption = row
+    try:
+        await context.bot.send_video(chat_id=update.effective_chat.id, video=file_id, caption=caption or "")
+    except Exception as e:
+        logging.exception("Failed to send video")
+        await update.message.reply_text("Video bhejne mein dikkat aayi. Please try again later.")
 
 async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     post = update.channel_post
     if not post:
         return
 
-    video = post.video or (post.document if post.document and post.document.mime_type.startswith("video") else None)
-    if not video:
-        return
-
-    file_id = video.file_id
+    video = post.video
+    doc = post.document
+    file_id = None
+    filename = None
     caption = post.caption or ""
-    token = uuid.uuid4().hex
 
+    if video:
+        file_id = video.file_id
+        filename = video.file_name
+    elif doc and (doc.mime_type and doc.mime_type.startswith("video")):
+        file_id = doc.file_id
+        filename = doc.file_name
+    else:
+        return  # not a video
+
+    token = uuid.uuid4().hex
     conn = sqlite3.connect(DB_PATH)
-    conn.execute("INSERT INTO videos (token, file_id, filename, caption) VALUES (?, ?, ?, ?)",
+    c = conn.cursor()
+    c.execute("INSERT INTO videos (token, file_id, filename, caption) VALUES (?, ?, ?, ?)",
+              (token, file_id, filename, caption))
+    conn.commit()
+    conn.close()
+
+    long_link = f"https://t.me/{BASE_BOT_USERNAME}?start={token}"
+    short_link = shorten_url(long_link)
+
+    # send the short link privately to admin (OWNER_CHAT_ID)
+    try:
+        await context.bot.send_message(
+            chat_id=OWNER_CHAT_ID,
+            text=f"🎬 New video saved!\n\n🔗 Short link: {short_link}\n\nOriginal: {long_link}\n\nToken: {token}"
+        )
+    except Exception as e:
+        logging.exception("Failed to send short link to admin")
+
+# === MAIN ===
+def main():
+    logging.basicConfig(level=logging.INFO)
+    init_db()
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start_handler))
+    app.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.ALL, channel_post_handler))
+
+    print("✅ Bot started... Waiting for videos in channel.")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
