@@ -129,7 +129,7 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Normal start message
     await update.message.reply_text(
         f"👋 Hello {user.first_name or 'User'}!\n\n"
-        "📁 Send me a share link to access a file.\n\n"
+        "📁 click to chanal vedio link to access file.\n\n"
         "🧑‍💻 If you're the admin, send any media or text to store it.\n"
         "Use /help to see available commands."
     )
@@ -139,7 +139,7 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not is_admin(user.id):
-        await update.message.reply_text("🚫 Only admin can upload files.")
+        await update.message.reply_text("🚫 Only admin can use .")
         return
 
     message = update.message
