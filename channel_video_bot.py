@@ -198,11 +198,14 @@ if __name__ == "__main__":
     short_link = shorten_url(long_link)
 
     # send the short link privately to admin (OWNER_CHAT_ID)
-    try:
-        await context.bot.send_message(
-            chat_id=OWNER_CHAT_ID,
-            text=f"🎬 New video saved!\n\n🔗 Short link: {short_link}\n\nOriginal: {long_link}\n\nToken: {token}"
-        )
+    # === FIXED ===
+try:
+    await context.bot.send_message(
+        chat_id=OWNER_CHAT_ID,
+        text=f"🎬 New video saved!\n🔗 Short link: {short_link}"
+    )
+except Exception as e:
+    logging.exception("Failed to send short link to admin")
     except Exception as e:
         logging.exception("Failed to send short link to admin")
 
