@@ -9,7 +9,7 @@ import sqlite3
 import logging
 import datetime
 from typing import Optional
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
     ContextTypes,
@@ -81,6 +81,13 @@ def increment_views(media_id: int):
     DB_CONN.commit()
 
 
+def get_stats():
+    cur = DB_CONN.cursor()
+    cur.execute("SELECT COUNT(*), SUM(views) FROM media")
+    total_files, total_views = cur.fetchone()
+    return total_files or 0, total_views or 0
+
+
 # ------------- Access Control -------------
 def is_admin(user_id: int) -> bool:
     return user_id == ADMIN_ID
@@ -91,7 +98,7 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     args = context.args
 
-    # Agar start ke sath argument hai -> jaise ?start=share_5
+    # Start with share link
     if args and args[0].startswith("share_"):
         try:
             media_id = int(args[0].split("_")[1])
@@ -119,11 +126,12 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"⚠️ Error loading file: {e}")
         return
 
-    # Normal start message (for all users)
+    # Normal start message
     await update.message.reply_text(
-        f"👋 Hello {user.first_name or 'User'}!\n"
-        "Send me a valid share link to access a file.\n\n"
-        "If you're the admin, you can send media to store it."
+        f"👋 Hello {user.first_name or 'User'}!\n\n"
+        "📁 Send me a valid share link to access a file.\n\n"
+        "🧑‍💻 If you're the admin, send any media or text to store it.\n"
+        "Use /help to see available commands."
     )
 
 
@@ -166,11 +174,40 @@ async def handle_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ Saved!\n🔗 Share link:\n{share_link}")
 
 
+# ---------- HELP COMMAND ----------
+async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    help_text = (
+        "📘 *Bot Commands*\n\n"
+        "/start - Start the bot or open a shared file.\n"
+        "/help - Show this help message.\n"
+        "/status - Show total uploaded files and total views.\n\n"
+        "Only the admin can upload new media.\n"
+        "Public users can only open shared links."
+    )
+    await update.message.reply_text(help_text, parse_mode="Markdown")
+
+
+# ---------- STATUS COMMAND ----------
+async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    total_files, total_views = get_stats()
+    await update.message.reply_text(
+        f"📊 *Bot Status*\n\n"
+        f"📁 Total Files: {total_files}\n"
+        f"👁️ Total Views: {total_views}",
+        parse_mode="Markdown"
+    )
+
+
 # ---------- MAIN ----------
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
+
     app.add_handler(CommandHandler("start", start_handler))
+    app.add_handler(CommandHandler("help", help_handler))
+    app.add_handler(CommandHandler("status", status_handler))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_upload))
+
+    logger.info("Bot started...")
     app.run_polling()
 
 
