@@ -1,231 +1,232 @@
-"""
-Telegram Universal Storage & Share Bot (Admin Only)
-Supports video, photo, document, audio, and text.
-Only ADMIN_ID can use the bot.
-"""
+# save as telegram_file_linker_bot.py
+# Requirements:
+#   pip install python-telegram-bot==20.6 (or latest v20+ compatible)
+#   Python 3.10+
 
-import os
-import sqlite3
 import logging
-import datetime
-from typing import Optional
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+import sqlite3
+import uuid
+import os
+from typing import List
+from telegram import (
+    Update,
+    InputMediaPhoto,
+    InputMediaVideo,
+    InputMediaDocument,
+    InputFile,
+    Message,
+)
 from telegram.ext import (
     ApplicationBuilder,
     ContextTypes,
     CommandHandler,
     MessageHandler,
     filters,
+    CallbackContext,
 )
+
+import os
 
 # ---------------- CONFIG ----------------
-TOKEN = "8222645012:AAEQMNK31oa5hDo_9OEStfNL7FMBdZMkUFM"
-BOT_USERNAME = "Cornsebot"
-CHANNEL_ID = -1003292247930
-ADMIN_ID = 7681308594
-DATABASE_FILE = "bot_storage.db"
-# -----------------------------------------
+BOT_TOKEN = "8222645012:AAEQMNK31oa5hDo_9OEStfNL7FMBdZMkUFM"       # <-- yahan apna bot token daalein
+ADMIN_USER_ID = 7681308594                                 # <-- yahan apna numeric Telegram user id daalein
+PRIVATE_CHANNEL_ID = "-1003292247930"                     # <-- yahan apna private channel ID daalein
+# ----------------------------------------
 
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
-)
-logger = logging.getLogger(__name__)
+if not BOT_TOKEN:
+    raise RuntimeError("Please set BOT_TOKEN environment variable")
+if ADMIN_USER_ID == 0:
+    raise RuntimeError("Please set ADMIN_ID environment variable to your Telegram user id")
+if not PRIVATE_CHANNEL_ID:
+    raise RuntimeError("Please set PRIVATE_CHANNEL_ID environment variable to the channel id")
 
-# ---------- SQLite Helper ---------------
-def init_db(path: str = DATABASE_FILE):
-    conn = sqlite3.connect(path, check_same_thread=False)
-    c = conn.cursor()
-    c.execute(
-        """
-        CREATE TABLE IF NOT EXISTS media (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            type TEXT NOT NULL,
-            file_id TEXT,
-            text_content TEXT,
-            uploader_id INTEGER NOT NULL,
-            caption TEXT,
-            title TEXT,
-            views INTEGER DEFAULT 0,
-            created_at TEXT
+# logging
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__name__)
+
+# ---------- DB helpers ----------
+DBFILE = "filelinks.db"
+
+def init_db():
+    con = sqlite3.connect(DBFILE)
+    cur = con.cursor()
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS links (
+      token TEXT PRIMARY KEY,
+      creator INTEGER,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+    """)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS files (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      token TEXT,
+      file_id TEXT,
+      file_type TEXT,
+      file_name TEXT,
+      FOREIGN KEY(token) REFERENCES links(token)
+    );
+    """)
+    con.commit()
+    con.close()
+
+def save_link(token: str, creator_id: int, file_entries: List[dict]):
+    con = sqlite3.connect(DBFILE)
+    cur = con.cursor()
+    cur.execute("INSERT INTO links(token, creator) VALUES (?, ?)", (token, creator_id))
+    for fe in file_entries:
+        cur.execute(
+            "INSERT INTO files(token, file_id, file_type, file_name) VALUES (?, ?, ?, ?)",
+            (token, fe["file_id"], fe.get("file_type", "document"), fe.get("file_name"))
         )
-        """
-    )
-    conn.commit()
-    return conn
+    con.commit()
+    con.close()
 
+def get_files_for_token(token: str):
+    con = sqlite3.connect(DBFILE)
+    cur = con.cursor()
+    cur.execute("SELECT file_id, file_type, file_name FROM files WHERE token = ? ORDER BY id ASC", (token,))
+    rows = cur.fetchall()
+    con.close()
+    return [{"file_id": r[0], "file_type": r[1], "file_name": r[2]} for r in rows]
 
-DB_CONN = init_db()
-
-# ---------- DB Interaction ----------
-def save_media(media_type: str, file_id: Optional[str], text_content: Optional[str],
-               uploader_id: int, caption: Optional[str], title: Optional[str]) -> int:
-    cur = DB_CONN.cursor()
-    cur.execute(
-        "INSERT INTO media (type, file_id, text_content, uploader_id, caption, title, views, created_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?)",
-        (media_type, file_id, text_content, uploader_id, caption, title, datetime.datetime.utcnow().isoformat()),
-    )
-    DB_CONN.commit()
-    return cur.lastrowid
-
-
-def get_media_by_id(media_id: int):
-    cur = DB_CONN.cursor()
-    cur.execute("SELECT * FROM media WHERE id=?", (media_id,))
-    return cur.fetchone()
-
-
-def increment_views(media_id: int):
-    cur = DB_CONN.cursor()
-    cur.execute("UPDATE media SET views = views + 1 WHERE id=?", (media_id,))
-    DB_CONN.commit()
-
-# ------------- Access Control -------------
-def is_admin(user_id: int) -> bool:
-    return user_id == ADMIN_ID
-
-
-# ------------- Handlers ----------------
+# ---------- Bot handlers ----------
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-
-    # Restrict access
-    if not is_admin(user.id):
-        await update.message.reply_text("🚫 You are not authorized to use this bot.")
+    # expecting deep-link: /start TOKEN
+    args = context.args
+    if not args:
+        await update.message.reply_text("Namaste. Yeh file-store bot hai.")
+        return
+    token = args[0]
+    files = get_files_for_token(token)
+    if not files:
+        await update.message.reply_text("Invalid ya expired link.")
         return
 
-    username = user.username or user.first_name or "User"
-    args = context.args if context.args else []
+    # send files to the user
+    # Try to send as media_group for <=10 compatible media types
+    # Build media group when items are photos/videos/documents of supported types
+    medias = []
+    documents = []
+    for f in files:
+        fid = f["file_id"]
+        ftype = f["file_type"] or "document"
+        # We will treat all as documents for simplicity except photos/videos
+        if ftype == "photo":
+            medias.append(InputMediaPhoto(media=fid, caption=f.get("file_name") or ""))
+        elif ftype == "video":
+            medias.append(InputMediaVideo(media=fid, caption=f.get("file_name") or ""))
+        else:
+            documents.append(f)
 
-    # If share link
-    if args and len(args) >= 1 and args[0].startswith("share_"):
-        try:
-            mid = int(args[0].split("share_")[-1])
-        except Exception:
-            await update.message.reply_text("Invalid share link.")
-            return
-
-        record = get_media_by_id(mid)
-        if not record:
-            await update.message.reply_text("File not found or removed.")
-            return
-
-        _, mtype, file_id, text_content, uploader_id, caption, title, views, created_at = record
-
-        try:
-            if mtype == "video":
-                await context.bot.send_video(update.effective_chat.id, file_id, caption=caption or title or "")
-            elif mtype == "photo":
-                await context.bot.send_photo(update.effective_chat.id, file_id, caption=caption or title or "")
-            elif mtype == "document":
-                await context.bot.send_document(update.effective_chat.id, file_id, caption=caption or title or "")
-            elif mtype == "audio":
-                await context.bot.send_audio(update.effective_chat.id, file_id, caption=caption or title or "")
-            elif mtype == "text":
-                await update.message.reply_text(text_content)
-            else:
-                await update.message.reply_text("Unknown media type.")
-                return
-
-            increment_views(mid)
-        except Exception as e:
-            logger.exception("Error sending media: %s", e)
-            await update.message.reply_text("Failed to send media.")
-            return
-
-        await update.message.reply_text(f"✅ Sent the content for you, {username}")
-        return
-
-    await update.message.reply_text(f"Hello 👋, {username}\nSend me any photo, video, file, or text to get a share link.")
-
-
-async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-
-    # Restrict access
-    if not is_admin(user.id):
-        await update.message.reply_text("🚫 You are not authorized to use this bot.")
-        return
-
-    caption = update.message.caption or ""
-    media_type = None
-    file_id = None
-    text_content = None
-    title = None
-
-    if update.message.video:
-        media_type = "video"
-        file_id = update.message.video.file_id
-        title = getattr(update.message.video, "file_name", None)
-    elif update.message.photo:
-        media_type = "photo"
-        file_id = update.message.photo[-1].file_id
-    elif update.message.document:
-        media_type = "document"
-        file_id = update.message.document.file_id
-        title = update.message.document.file_name
-    elif update.message.audio:
-        media_type = "audio"
-        file_id = update.message.audio.file_id
-        title = update.message.audio.file_name
-    elif update.message.text:
-        media_type = "text"
-        text_content = update.message.text
-    else:
-        await update.message.reply_text("Unsupported message type.")
-        return
-
-    mid = save_media(media_type, file_id, text_content, user.id, caption, title)
-
-    # Send to channel
     try:
-        if media_type == "text":
-            await context.bot.send_message(CHANNEL_ID, f"Stored text (id={mid}):\n{text_content}")
-        elif media_type == "photo":
-            await context.bot.send_photo(CHANNEL_ID, file_id, caption=f"Stored photo id={mid}")
-        elif media_type == "video":
-            await context.bot.send_video(CHANNEL_ID, file_id, caption=f"Stored video id={mid}")
-        elif media_type == "document":
-            await context.bot.send_document(CHANNEL_ID, file_id, caption=f"Stored doc id={mid}")
-        elif media_type == "audio":
-            await context.bot.send_audio(CHANNEL_ID, file_id, caption=f"Stored audio id={mid}")
+        if 1 <= len(medias) <= 10 and not documents:
+            # send as media_group
+            await update.message.reply_media_group(medias)
+        else:
+            # send documents individually (works for any count)
+            for d in files:
+                try:
+                    await update.message.bot.send_document(chat_id=update.effective_chat.id, document=d["file_id"], filename=d.get("file_name"))
+                except Exception as e:
+                    log.warning("Failed to send doc %s: %s", d, e)
     except Exception as e:
-        logger.warning("Channel upload failed: %s", e)
+        log.exception("Error sending files: %s", e)
+        await update.message.reply_text("Kuch error hua files bhejte waqt.")
 
-    bot_username = BOT_USERNAME
-    share_link = f"https://t.me/{bot_username}?start=share_{mid}"
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Avoid this message.")
 
-    keyboard = InlineKeyboardMarkup(
-        [[InlineKeyboardButton("🔗 Open Share Link", url=share_link)]]
-    )
-
-    await update.message.reply_text(
-        f"✅ Saved ({media_type}) successfully.\nShare link:\n{share_link}",
-        reply_markup=keyboard,
-    )
-
-
-async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def incoming_files_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Only accept from ADMIN_USER_ID
     user = update.effective_user
-    if not is_admin(user.id):
-        await update.message.reply_text("🚫 You are not authorized to use this bot.")
+    if user.id != ADMIN_USER_ID:
+        await update.message.reply_text("Sirf admin hi files upload kar sakta hai.")
         return
 
-    await update.message.reply_text(
-        "📦 Send any photo, video, file, or text — I’ll store it privately and give you a share link!\n\n"
-        "Example: https://t.me/<bot_username>?start=share_<id>\n"
-        "Your channel stays hidden."
-    )
+    # Collect attachments in this message. Could be single or multiple (media_group)
+    msg: Message = update.message
 
-# -------------- Main ----------------
+    files_to_save = []
+
+    # Photos
+    if msg.photo:
+        # photo is a list of sizes; pick largest
+        largest = msg.photo[-1]
+        # forward/copy to channel
+        forwarded = await largest.get_file()
+        # But better approach: forward the whole message to channel to preserve file_id
+        sent_msg = await msg.forward(chat_id=PRIVATE_CHANNEL_ID)
+        # After forward, extract file id from sent_msg
+        if sent_msg.photo:
+            fid = sent_msg.photo[-1].file_id
+            files_to_save.append({"file_id": fid, "file_type": "photo", "file_name": None})
+
+    # Documents (files)
+    if msg.document:
+        sent_msg = await msg.forward(chat_id=PRIVATE_CHANNEL_ID)
+        if sent_msg.document:
+            fid = sent_msg.document.file_id
+            fname = sent_msg.document.file_name
+            files_to_save.append({"file_id": fid, "file_type": "document", "file_name": fname})
+
+    # Videos
+    if msg.video:
+        sent_msg = await msg.forward(chat_id=PRIVATE_CHANNEL_ID)
+        if sent_msg.video:
+            fid = sent_msg.video.file_id
+            files_to_save.append({"file_id": fid, "file_type": "video", "file_name": None})
+
+    # If the user sent a media group, python-telegram-bot may give them as separate messages. For safety, check if none collected but there are attachments in context.args etc.
+    if not files_to_save:
+        await update.message.reply_text("Koi valid file nahi mili. Kya aap file/document/photo bhej rahe the?")
+        return
+
+    # create token and save
+    token = uuid.uuid4().hex  # long unique token; you can shorten
+    save_link(token, user.id, files_to_save)
+
+    # create deep-link
+    bot_username = (await context.bot.get_me()).username
+    deep_link = f"https://t.me/{bot_username}?start={token}"
+
+    await update.message.reply_text(f"Link created: {deep_link}\nShare karo jis se file mil jaaye.")
+
+# Admin helper to create link from recent channel message ids (optional)
+async def make_link_from_channel_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # optional command: /linkfrom <channel_message_id1> <channel_message_id2> ...
+    user = update.effective_user
+    if user.id != ADMIN_USER_ID:
+        await update.message.reply_text("Sirf admin use kar sakta hai.")
+        return
+    args = context.args
+    if not args:
+        await update.message.reply_text("Usage: /linkfrom <message_id1> [message_id2 ...]")
+        return
+    files = []
+    for mid in args:
+        try:
+            mid_i = int(mid)
+            msg = await context.bot.get_chat(PRIVATE_CHANNEL_ID)
+            # fetch message: getChat doesn't fetch messages. Telegram API has getMessage only for bots in PM. So this is left as advanced.
+            # For simplicity respond that this feature needs additional implementation.
+        except:
+            continue
+    await update.message.reply_text("Feature not implemented in this example. Use direct upload to bot.")
+
+# ---------- main ----------
 def main():
-    application = ApplicationBuilder().token(TOKEN).build()
-    application.add_handler(CommandHandler("start", start_handler))
-    application.add_handler(CommandHandler("help", help_handler))
-    application.add_handler(MessageHandler(filters.ALL, media_handler))
-    print("🚀 Bot running...")
-    application.run_polling()
+    init_db()
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
 
+    app.add_handler(CommandHandler("start", start_handler))
+    app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler("linkfrom", make_link_from_channel_message))
+    # handle incoming files (documents, photos, videos)
+    app.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO | filters.VIDEO, incoming_files_handler))
+
+    log.info("Bot starting...")
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
