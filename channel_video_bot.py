@@ -29,7 +29,7 @@ import os
 
 # ---------------- CONFIG ----------------
 BOT_TOKEN = "8222645012:AAEQMNK31oa5hDo_9OEStfNL7FMBdZMkUFM"       # <-- yahan apna bot token daalein
-ADMIN_USER_ID = 7681308594,8244432792                        # <-- yahan apna numeric Telegram user id daalein
+ADMIN_USER_ID = [7681308594,8244432792]                       # <-- yahan apna numeric Telegram user id daalein
 PRIVATE_CHANNEL_ID = "-1003292247930"                     # <-- yahan apna private channel ID daalein
 # ----------------------------------------
 
