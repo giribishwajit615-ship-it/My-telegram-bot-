@@ -24,10 +24,9 @@ from telegram.ext import (
 )
 
 # ---------------- CONFIG ----------------
-BOT_TOKEN = "8222645012:AAEQMNK31oa5hDo_9OEStfNL7FMBdZMkUFM"
-ADMIN_USER_ID = [7681308594, 8244432792]
-PRIVATE_CHANNEL_ID = "-1003292247930"
-PREMIUM_FILE = "premium_users.txt"  # file to store premium user IDs
+BOT_TOKEN = "8222645012:AAEQMNK31oa5hDo_9OEStfNL7FMBdZMkUFM"       # <-- yahan apna bot token daalein
+ADMIN_USER_ID = [7681308594, 8244432792]                        # <-- aap aur aapke dost ke numeric Telegram user id
+PRIVATE_CHANNEL_ID = "-1003292247930"                           # <-- yahan apna private channel ID daalein
 # ----------------------------------------
 
 if not BOT_TOKEN:
@@ -87,49 +86,18 @@ def get_files_for_token(token: str):
     con.close()
     return [{"file_id": r[0], "file_type": r[1], "file_name": r[2]} for r in rows]
 
-# ---------- Premium helpers ----------
-def load_premium_users():
-    if not os.path.exists(PREMIUM_FILE):
-        return []
-    with open(PREMIUM_FILE, "r") as f:
-        return [int(x.strip()) for x in f.readlines() if x.strip().isdigit()]
-
-def save_premium_user(user_id: int):
-    users = load_premium_users()
-    if user_id not in users:
-        users.append(user_id)
-        with open(PREMIUM_FILE, "w") as f:
-            f.write("\n".join(map(str, users)))
-
-def is_premium(user_id: int):
-    return user_id in load_premium_users()
-
 # ---------- Bot handlers ----------
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
-    user_id = update.effective_user.id
     if not args:
-        await update.message.reply_text("Namaste! Yeh file-store bot hai.")
+        await update.message.reply_text("Namaste. Yeh file-store bot hai.")
         return
-
     token = args[0]
     files = get_files_for_token(token)
     if not files:
         await update.message.reply_text("Invalid ya expired link.")
         return
 
-    # Check for premium user
-    if is_premium(user_id):
-        await update.message.reply_text("🎉 Premium user detected! Direct file mil rahi hai...")
-    else:
-        short_link = f"https://softurl.in/{token}"  # apna shortlink logic yahan lagao
-        await update.message.reply_text(
-            f"🔗 Download karne ke liye pehle ye ad link open karo:\n{short_link}\n\n"
-            "Ad dekhne ke baad aapko file mil jaayegi!"
-        )
-        return  # normal user ko file abhi nahi milti
-
-    # Premium user -> direct send files
     medias = []
     documents = []
     for f in files:
@@ -160,7 +128,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def incoming_files_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    if user.id not in ADMIN_USER_ID:
+    if user.id not in ADMIN_USER_ID:  # ✅ multi-admin fix
         await update.message.reply_text("Sirf admin hi files upload kar sakta hai.")
         return
 
@@ -198,28 +166,10 @@ async def incoming_files_handler(update: Update, context: ContextTypes.DEFAULT_T
 
 async def make_link_from_channel_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    if user.id not in ADMIN_USER_ID:
+    if user.id not in ADMIN_USER_ID:  # ✅ multi-admin fix
         await update.message.reply_text("Sirf admin use kar sakta hai.")
         return
     await update.message.reply_text("Feature not implemented. Use direct upload to bot.")
-
-# ---------- Admin command: /premium_user ----------
-async def add_premium_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    if user.id not in ADMIN_USER_ID:
-        await update.message.reply_text("❌ Aap admin nahi ho.")
-        return
-
-    if not context.args:
-        await update.message.reply_text("Usage: /premium_user <user_id>")
-        return
-
-    try:
-        uid = int(context.args[0])
-        save_premium_user(uid)
-        await update.message.reply_text(f"✅ User {uid} ko Premium list me add kar diya gaya!")
-    except Exception as e:
-        await update.message.reply_text(f"Error: {e}")
 
 # ---------- main ----------
 def main():
@@ -229,7 +179,6 @@ def main():
     app.add_handler(CommandHandler("start", start_handler))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("linkfrom", make_link_from_channel_message))
-    app.add_handler(CommandHandler("premium_user", add_premium_user))
     app.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO | filters.VIDEO, incoming_files_handler))
 
     log.info("Bot starting...")
